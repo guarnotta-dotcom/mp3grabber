@@ -3,14 +3,16 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { pipeline } from "stream/promises";
-import { Transform } from "stream";
 import fetch from "node-fetch";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import { v4 as uuidv4 } from "uuid";
 
 dotenv.config();
+
+if (!ffmpegPath) {
+  throw new Error("ffmpeg-static did not provide a binary path.");
+}
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
@@ -20,12 +22,11 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const maxFileMb = Number(process.env.MAX_FILE_MB || 250);
+const maxFileMb = Number(process.env.MAX_FILE_MB || 100);
 const maxBytes = maxFileMb * 1024 * 1024;
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  console.log(`${req.method} ${req.path} origin=${origin || "none"}`);
 
   if (origin && allowedOrigins.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
@@ -53,8 +54,6 @@ function guessExtensionFromUrl(url) {
 }
 
 async function downloadToFile(url, destinationPath) {
-  console.log("Downloading:", url);
-
   const response = await fetch(url, {
     redirect: "follow",
     headers: {
@@ -63,41 +62,27 @@ async function downloadToFile(url, destinationPath) {
     },
   });
 
-  console.log("Download status:", response.status);
-  console.log("Download content-type:", response.headers.get("content-type"));
-
   if (!response.ok) {
     throw new Error(`Download failed with status ${response.status}`);
   }
 
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("text/html")) {
-    throw new Error("Source URL returned HTML instead of a media file.");
+    throw new Error("Source URL returned an HTML page instead of a media file.");
   }
 
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength && contentLength > maxBytes) {
-    throw new Error(`File exceeds ${maxFileMb} MB limit`);
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  if (buffer.length === 0) {
+    throw new Error("Downloaded file was empty.");
   }
 
-  let bytesRead = 0;
-  const countingStream = new Transform({
-    transform(chunk, _encoding, callback) {
-      bytesRead += chunk.length;
-      if (bytesRead > maxBytes) {
-        callback(new Error(`File exceeds ${maxFileMb} MB limit`));
-        return;
-      }
-      callback(null, chunk);
-    },
-  });
-
-  if (!response.body) {
-    throw new Error("No response body received from source URL");
+  if (buffer.length > maxBytes) {
+    throw new Error(`File exceeds ${maxFileMb} MB limit.`);
   }
 
-  await pipeline(response.body, countingStream, fs.createWriteStream(destinationPath));
-  console.log("Downloaded bytes:", bytesRead);
+  fs.writeFileSync(destinationPath, buffer);
 }
 
 function convertToMp3(inputPath, outputPath) {
@@ -105,11 +90,13 @@ function convertToMp3(inputPath, outputPath) {
     ffmpeg(inputPath)
       .noVideo()
       .audioCodec("libmp3lame")
-      .audioQuality(2)
+      .audioBitrate("192k")
       .format("mp3")
-      .on("start", (cmd) => console.log("FFmpeg:", cmd))
+      .on("start", (cmd) => {
+        console.log("FFmpeg command:", cmd);
+      })
       .on("end", () => {
-        console.log("FFmpeg finished");
+        console.log("FFmpeg finished successfully.");
         resolve();
       })
       .on("error", (err) => {
@@ -127,14 +114,13 @@ app.get("/health", (_req, res) => {
 app.post("/api/test", (req, res) => {
   res.json({
     ok: true,
+    body: req.body || null,
     origin: req.headers.origin || null,
-    body: req.body || null
   });
 });
 
 app.post("/api/convert", async (req, res, next) => {
   const { url } = req.body || {};
-  console.log("Convert request body:", req.body);
 
   if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "A media URL is required." });
@@ -153,14 +139,29 @@ app.post("/api/convert", async (req, res, next) => {
 
   const jobId = uuidv4();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "approved-media-"));
+  const extension = guessExtensionFromUrl(url);
+  const inputPath = path.join(tempDir, `input-${jobId}${extension}`);
+  const outputPath = path.join(tempDir, `audio-${jobId}.mp3`);
 
   try {
-    const extension = guessExtensionFromUrl(url);
-    const inputPath = path.join(tempDir, `input-${jobId}${extension}`);
-    const outputPath = path.join(tempDir, `audio-${jobId}.mp3`);
-
+    console.log("Starting download:", url);
     await downloadToFile(url, inputPath);
+
+    if (!fs.existsSync(inputPath)) {
+      throw new Error("Input file was not created.");
+    }
+
+    const inputStats = fs.statSync(inputPath);
+    console.log("Downloaded input size:", inputStats.size);
+
     await convertToMp3(inputPath, outputPath);
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error("MP3 output file was not created.");
+    }
+
+    const outputStats = fs.statSync(outputPath);
+    console.log("Created output size:", outputStats.size);
 
     res.download(outputPath, "audio.mp3", (err) => {
       try {
@@ -200,4 +201,5 @@ app.use((err, req, res, _next) => {
 const port = Number(process.env.PORT || 3001);
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
+  console.log(`Using ffmpeg binary: ${ffmpegPath}`);
 });
