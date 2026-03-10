@@ -1,5 +1,4 @@
 import express from "express";
-import cors from "cors";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
@@ -16,41 +15,45 @@ dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(null, false);
-    },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"],
-  })
-);
-
-app.options("*", cors());
-
-
+const allowedSourceHosts = (process.env.ALLOWED_SOURCE_HOSTS || "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
 const maxFileMb = Number(process.env.MAX_FILE_MB || 250);
 const maxBytes = maxFileMb * 1024 * 1024;
 
+// CORS headers for every request, including errors and preflight
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type");
+  }
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+app.use(express.json({ limit: "1mb" }));
+
 function isAllowedHost(hostname) {
   const host = hostname.toLowerCase();
-  return true;
+  return allowedSourceHosts.some(
+    (allowed) => host === allowed || host.endsWith(`.${allowed}`)
+  );
 }
 
 function getExtensionFromContentType(contentType) {
@@ -87,6 +90,10 @@ async function downloadToFile(url, destinationPath) {
     },
   });
 
+  if (!response.body) {
+    throw new Error("No response body received from source URL");
+  }
+
   await pipeline(response.body, countingStream, fs.createWriteStream(destinationPath));
 
   return {
@@ -112,7 +119,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/convert", async (req, res) => {
+app.post("/api/convert", async (req, res, next) => {
   const { url } = req.body || {};
 
   if (!url || typeof url !== "string") {
@@ -141,13 +148,17 @@ app.post("/api/convert", async (req, res) => {
 
   try {
     const tempInputBase = path.join(tempDir, `input-${jobId}`);
+
     const headResponse = await fetch(url, {
       method: "HEAD",
       redirect: "follow",
-      headers: { "User-Agent": "HelixFilmClassAudioTool/1.0" },
+      headers: {
+        "User-Agent": "HelixFilmClassAudioTool/1.0",
+      },
     }).catch(() => null);
 
-    const contentType = headResponse?.headers?.get("content-type") || "application/octet-stream";
+    const contentType =
+      headResponse?.headers?.get("content-type") || "application/octet-stream";
     const extension = getExtensionFromContentType(contentType);
     const inputPath = `${tempInputBase}${extension}`;
     const outputPath = path.join(tempDir, `audio-${jobId}.mp3`);
@@ -159,6 +170,7 @@ app.post("/api/convert", async (req, res) => {
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
       } catch {}
+
       if (err) {
         console.error("Download response error:", err);
       }
@@ -167,11 +179,30 @@ app.post("/api/convert", async (req, res) => {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {}
-    console.error(error);
-    res.status(500).json({
-      error: error.message || "Conversion failed.",
-    });
+
+    next(error);
   }
+});
+
+// Global error handler
+app.use((err, req, res, _next) => {
+  console.error("Unhandled server error:", err);
+
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type");
+  }
+
+  if (res.headersSent) {
+    return;
+  }
+
+  res.status(500).json({
+    error: err.message || "Internal server error",
+  });
 });
 
 const port = Number(process.env.PORT || 3001);
