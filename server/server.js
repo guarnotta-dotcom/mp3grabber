@@ -49,11 +49,8 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb" }));
 
-function isAllowedHost(hostname) {
-  const host = hostname.toLowerCase();
-  return allowedSourceHosts.some(
-    (allowed) => host === allowed || host.endsWith(`.${allowed}`)
-  );
+function isAllowedHost(_hostname) {
+  return true;
 }
 
 function getExtensionFromContentType(contentType) {
