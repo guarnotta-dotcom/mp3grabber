@@ -8,7 +8,6 @@ import { Transform } from "stream";
 import fetch from "node-fetch";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
-import mime from "mime-types";
 import { v4 as uuidv4 } from "uuid";
 
 dotenv.config();
@@ -21,15 +20,9 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const allowedSourceHosts = (process.env.ALLOWED_SOURCE_HOSTS || "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
 const maxFileMb = Number(process.env.MAX_FILE_MB || 250);
 const maxBytes = maxFileMb * 1024 * 1024;
 
-// CORS headers for every request, including errors and preflight
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
@@ -53,21 +46,31 @@ function isAllowedHost(_hostname) {
   return true;
 }
 
-function getExtensionFromContentType(contentType) {
-  const ext = mime.extension((contentType || "").split(";")[0]);
-  return ext ? `.${ext}` : ".bin";
+function guessExtensionFromUrl(url) {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    const ext = path.extname(pathname);
+    if (ext) return ext;
+  } catch {}
+  return ".mp4";
 }
 
 async function downloadToFile(url, destinationPath) {
   const response = await fetch(url, {
     redirect: "follow",
     headers: {
-      "User-Agent": "HelixFilmClassAudioTool/1.0",
+      "User-Agent": "Mozilla/5.0 HelixFilmClassAudioTool/1.0",
+      "Accept": "*/*",
     },
   });
 
   if (!response.ok) {
     throw new Error(`Download failed with status ${response.status}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/html")) {
+    throw new Error("Source URL returned an HTML page instead of a media file.");
   }
 
   const contentLength = Number(response.headers.get("content-length") || 0);
@@ -93,10 +96,7 @@ async function downloadToFile(url, destinationPath) {
 
   await pipeline(response.body, countingStream, fs.createWriteStream(destinationPath));
 
-  return {
-    contentType: response.headers.get("content-type") || "application/octet-stream",
-    bytesRead,
-  };
+  return { bytesRead, contentType };
 }
 
 function convertToMp3(inputPath, outputPath) {
@@ -106,8 +106,11 @@ function convertToMp3(inputPath, outputPath) {
       .audioCodec("libmp3lame")
       .audioQuality(2)
       .format("mp3")
+      .on("start", (commandLine) => {
+        console.log("FFmpeg started:", commandLine);
+      })
       .on("end", resolve)
-      .on("error", reject)
+      .on("error", (err) => reject(err))
       .save(outputPath);
   });
 }
@@ -144,23 +147,18 @@ app.post("/api/convert", async (req, res, next) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "approved-media-"));
 
   try {
-    const tempInputBase = path.join(tempDir, `input-${jobId}`);
-
-    const headResponse = await fetch(url, {
-      method: "HEAD",
-      redirect: "follow",
-      headers: {
-        "User-Agent": "HelixFilmClassAudioTool/1.0",
-      },
-    }).catch(() => null);
-
-    const contentType =
-      headResponse?.headers?.get("content-type") || "application/octet-stream";
-    const extension = getExtensionFromContentType(contentType);
-    const inputPath = `${tempInputBase}${extension}`;
+    const extension = guessExtensionFromUrl(url);
+    const inputPath = path.join(tempDir, `input-${jobId}${extension}`);
     const outputPath = path.join(tempDir, `audio-${jobId}.mp3`);
 
-    await downloadToFile(url, inputPath);
+    const downloadInfo = await downloadToFile(url, inputPath);
+    console.log("Downloaded file:", {
+      url,
+      bytesRead: downloadInfo.bytesRead,
+      contentType: downloadInfo.contentType,
+      inputPath,
+    });
+
     await convertToMp3(inputPath, outputPath);
 
     res.download(outputPath, "audio.mp3", (err) => {
@@ -181,7 +179,6 @@ app.post("/api/convert", async (req, res, next) => {
   }
 });
 
-// Global error handler
 app.use((err, req, res, _next) => {
   console.error("Unhandled server error:", err);
 
