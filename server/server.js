@@ -34,10 +34,7 @@ app.use(
   })
 );
 
-const allowedSourceHosts = (process.env.ALLOWED_SOURCE_HOSTS || "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+const allowedSourceHosts = 'all';
 
 const maxFileMb = Number(process.env.MAX_FILE_MB || 250);
 const maxBytes = maxFileMb * 1024 * 1024;
