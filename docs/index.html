@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Helix Film Class Audio Tool</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <section class="hero card">
+        <p class="eyebrow">Helix Film Class</p>
+        <h1>Approved Media Link to MP3</h1>
+        <p class="subtitle">
+          Paste a teacher-approved media link, then download an MP3 made from that file.
+        </p>
+      </section>
+
+      <section class="card">
+        <label for="mediaUrl">Approved media link</label>
+        <input
+          id="mediaUrl"
+          type="url"
+          placeholder="https://your-school-domain.org/media/student-video.mp4"
+        />
+        <button id="convertBtn">Create MP3</button>
+        <p class="hint">Use only teacher-approved or school-approved media links.</p>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section class="card small">
+        <h2>How it works</h2>
+        <ol>
+          <li>Paste a link to an approved audio or video file.</li>
+          <li>Click <strong>Create MP3</strong>.</li>
+          <li>The server extracts the audio and downloads the MP3.</li>
+        </ol>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
