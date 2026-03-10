@@ -25,6 +25,7 @@ const maxBytes = maxFileMb * 1024 * 1024;
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  console.log(`${req.method} ${req.path} origin=${origin || "none"}`);
 
   if (origin && allowedOrigins.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
@@ -42,10 +43,6 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb" }));
 
-function isAllowedHost(_hostname) {
-  return true;
-}
-
 function guessExtensionFromUrl(url) {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
@@ -56,6 +53,8 @@ function guessExtensionFromUrl(url) {
 }
 
 async function downloadToFile(url, destinationPath) {
+  console.log("Downloading:", url);
+
   const response = await fetch(url, {
     redirect: "follow",
     headers: {
@@ -64,13 +63,16 @@ async function downloadToFile(url, destinationPath) {
     },
   });
 
+  console.log("Download status:", response.status);
+  console.log("Download content-type:", response.headers.get("content-type"));
+
   if (!response.ok) {
     throw new Error(`Download failed with status ${response.status}`);
   }
 
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("text/html")) {
-    throw new Error("Source URL returned an HTML page instead of a media file.");
+    throw new Error("Source URL returned HTML instead of a media file.");
   }
 
   const contentLength = Number(response.headers.get("content-length") || 0);
@@ -95,8 +97,7 @@ async function downloadToFile(url, destinationPath) {
   }
 
   await pipeline(response.body, countingStream, fs.createWriteStream(destinationPath));
-
-  return { bytesRead, contentType };
+  console.log("Downloaded bytes:", bytesRead);
 }
 
 function convertToMp3(inputPath, outputPath) {
@@ -106,11 +107,15 @@ function convertToMp3(inputPath, outputPath) {
       .audioCodec("libmp3lame")
       .audioQuality(2)
       .format("mp3")
-      .on("start", (commandLine) => {
-        console.log("FFmpeg started:", commandLine);
+      .on("start", (cmd) => console.log("FFmpeg:", cmd))
+      .on("end", () => {
+        console.log("FFmpeg finished");
+        resolve();
       })
-      .on("end", resolve)
-      .on("error", (err) => reject(err))
+      .on("error", (err) => {
+        console.error("FFmpeg error:", err);
+        reject(err);
+      })
       .save(outputPath);
   });
 }
@@ -119,8 +124,17 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/test", (req, res) => {
+  res.json({
+    ok: true,
+    origin: req.headers.origin || null,
+    body: req.body || null
+  });
+});
+
 app.post("/api/convert", async (req, res, next) => {
   const { url } = req.body || {};
+  console.log("Convert request body:", req.body);
 
   if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "A media URL is required." });
@@ -137,12 +151,6 @@ app.post("/api/convert", async (req, res, next) => {
     return res.status(400).json({ error: "Only http and https links are allowed." });
   }
 
-  if (!isAllowedHost(parsedUrl.hostname)) {
-    return res.status(403).json({
-      error: "That source is not on the approved host list.",
-    });
-  }
-
   const jobId = uuidv4();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "approved-media-"));
 
@@ -151,14 +159,7 @@ app.post("/api/convert", async (req, res, next) => {
     const inputPath = path.join(tempDir, `input-${jobId}${extension}`);
     const outputPath = path.join(tempDir, `audio-${jobId}.mp3`);
 
-    const downloadInfo = await downloadToFile(url, inputPath);
-    console.log("Downloaded file:", {
-      url,
-      bytesRead: downloadInfo.bytesRead,
-      contentType: downloadInfo.contentType,
-      inputPath,
-    });
-
+    await downloadToFile(url, inputPath);
     await convertToMp3(inputPath, outputPath);
 
     res.download(outputPath, "audio.mp3", (err) => {
@@ -174,7 +175,6 @@ app.post("/api/convert", async (req, res, next) => {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {}
-
     next(error);
   }
 });
@@ -190,9 +190,7 @@ app.use((err, req, res, _next) => {
     res.header("Access-Control-Allow-Headers", "Content-Type");
   }
 
-  if (res.headersSent) {
-    return;
-  }
+  if (res.headersSent) return;
 
   res.status(500).json({
     error: err.message || "Internal server error",
