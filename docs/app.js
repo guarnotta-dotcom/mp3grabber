@@ -2,7 +2,7 @@ const mediaUrlInput = document.getElementById("mediaUrl");
 const convertBtn = document.getElementById("convertBtn");
 const statusBox = document.getElementById("status");
 
-const API_BASE = "https://YOUR-RENDER-URL.onrender.com";
+const API_BASE = "https://mp3grabber.onrender.com";
 
 function setStatus(message, type = "") {
   statusBox.className = `status ${type}`.trim();
