@@ -34,16 +34,14 @@ app.use(
   })
 );
 
-const allowedSourceHosts = 'all';
+
 
 const maxFileMb = Number(process.env.MAX_FILE_MB || 250);
 const maxBytes = maxFileMb * 1024 * 1024;
 
 function isAllowedHost(hostname) {
   const host = hostname.toLowerCase();
-  return allowedSourceHosts.some(
-    (allowed) => host === allowed || host.endsWith(`.${allowed}`)
-  );
+  return true;
 }
 
 function getExtensionFromContentType(contentType) {
